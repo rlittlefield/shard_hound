@@ -36,13 +36,11 @@ database_name = "shard_hound_dev"
 shard = 1
 role = "primary"
 
-# Future shards, declared in their final shape. `provisioning = true`
-# keeps each out of the serving topology until `ADD SHARD
-# shard_hound_dev <n>` syncs it and its cutover activates it (in
-# order: 2, then 3, then 4). This config is mounted read-only, so the
-# flag stays in the file after activation; pgdog reconciles against
-# the `pgdog.config` marker on the shard itself at startup and after
-# RELOAD.
+# Shards 2 and 3 started as `provisioning = true` entries and were
+# activated by ADD SHARD; per the workflow, the flag comes off the
+# manifest after activation. Startup convergence can also re-activate
+# a flagged-but-activated shard from its `pgdog.config` marker, but
+# don't lean on it: removing the flag is the durable record.
 [[databases]]
 name = "shard_hound_dev"
 host = "shard_2"
@@ -50,7 +48,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 2
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -59,7 +56,10 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 3
 role = "primary"
-provisioning = true
+
+# The next future shard, declared in its final shape and kept out of
+# the serving topology until `ADD SHARD shard_hound_dev 4` activates
+# it.
 
 [[databases]]
 name = "shard_hound_dev"

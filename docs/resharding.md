@@ -172,6 +172,15 @@ the policy table itself through the omni data sync.
 - **pgdog's prepared-statement cache survives DDL**: after `ALTER TABLE ...
   ALTER COLUMN ... TYPE`, cached statements keep the old parameter types and
   fail until pgdog restarts.
+- **Startup convergence broke after growing by more than one shard** (fixed
+  by fork commit `646830b`): every cutover refreshes every shard's
+  `pgdog.config` marker to the new total, so after growing 2→4 shard 2's
+  marker reads `(2, 4)` — and a restart with the stale manifest refused to
+  converge because it expected `(2, serving + 1)`. The cluster came back
+  serving only shards 0–1 with tenants stranded on 2 and 3. The fix accepts
+  any marker width that includes the shard. Independent of the fix: **remove
+  the `provisioning` flag from the manifest after each activation** — the
+  documented step this branch had skipped.
 - **`REPLICA IDENTITY USING INDEX` doesn't survive the schema sync** either:
   the new shard gets the indexes but reverts to the default identity, so the
   first MOVE KEYS *out of* an added shard is refused. The UI re-asserts the
