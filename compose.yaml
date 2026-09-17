@@ -1,3 +1,20 @@
+# ADD SHARD and MOVE KEYS sync data over logical replication, so every
+# shard runs with wal_level=logical and headroom for slots (shard 0
+# sources the omni snapshot for every ADD SHARD, and each MOVE KEYS
+# holds a slot on its source shard).
+x-shard: &shard
+  image: postgres:18
+  command: -c wal_level=logical -c max_replication_slots=32 -c max_wal_senders=32
+  environment:
+    POSTGRES_DB: shard_hound_dev
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_USER: postgres
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -d shard_hound_dev"]
+    interval: 5s
+    timeout: 5s
+    retries: 10
+
 services:
   postgres:
     image: postgres:18
@@ -17,100 +34,115 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
 
-  # ADD SHARD and MOVE KEYS sync data over logical replication, so every
-  # shard runs with wal_level=logical and headroom for slots.
+  # Host ports: 5432 belongs to k3s, 5436 to the control database, so
+  # the shards take 5433-5435 and 5437 onward. Shards 0-5 are serving;
+  # everything after them is a pre-declared future shard, kept out of
+  # the serving topology by `provisioning = true` entries in
+  # pgdog.toml. Each `ADD SHARD shard_hound_dev <n>` (or the UI's Add
+  # shard button) activates the next one, in order. They idle empty
+  # until then.
   shard_0:
-    image: postgres:18
-    command: -c wal_level=logical -c max_replication_slots=8 -c max_wal_senders=10
-    environment:
-      POSTGRES_DB: shard_hound_dev
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-    ports:
-      - "127.0.0.1:5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d shard_hound_dev"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - postgres_shard_0_data:/var/lib/postgresql
+    <<: *shard
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: [postgres_shard_0_data:/var/lib/postgresql]
 
   shard_1:
-    image: postgres:18
-    command: -c wal_level=logical -c max_replication_slots=8 -c max_wal_senders=10
-    environment:
-      POSTGRES_DB: shard_hound_dev
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-    ports:
-      - "127.0.0.1:5434:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d shard_hound_dev"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - postgres_shard_1_data:/var/lib/postgresql
+    <<: *shard
+    ports: ["127.0.0.1:5434:5432"]
+    volumes: [postgres_shard_1_data:/var/lib/postgresql]
 
-  # Future shards, declared in their final shape and kept out of the
-  # serving topology by `provisioning = true` entries in pgdog.toml.
-  # Each `ADD SHARD shard_hound_dev <n>` activates the next one, in
-  # order. They idle empty until then.
   shard_2:
-    image: postgres:18
-    command: -c wal_level=logical -c max_replication_slots=8 -c max_wal_senders=10
-    environment:
-      POSTGRES_DB: shard_hound_dev
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-    ports:
-      - "127.0.0.1:5435:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d shard_hound_dev"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - postgres_shard_2_data:/var/lib/postgresql
+    <<: *shard
+    ports: ["127.0.0.1:5435:5432"]
+    volumes: [postgres_shard_2_data:/var/lib/postgresql]
 
-  # Host port 5437: 5436 belongs to the control database.
   shard_3:
-    image: postgres:18
-    command: -c wal_level=logical -c max_replication_slots=8 -c max_wal_senders=10
-    environment:
-      POSTGRES_DB: shard_hound_dev
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-    ports:
-      - "127.0.0.1:5437:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d shard_hound_dev"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - postgres_shard_3_data:/var/lib/postgresql
+    <<: *shard
+    ports: ["127.0.0.1:5437:5432"]
+    volumes: [postgres_shard_3_data:/var/lib/postgresql]
 
   shard_4:
-    image: postgres:18
-    command: -c wal_level=logical -c max_replication_slots=8 -c max_wal_senders=10
-    environment:
-      POSTGRES_DB: shard_hound_dev
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-    ports:
-      - "127.0.0.1:5438:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d shard_hound_dev"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - postgres_shard_4_data:/var/lib/postgresql
+    <<: *shard
+    ports: ["127.0.0.1:5438:5432"]
+    volumes: [postgres_shard_4_data:/var/lib/postgresql]
+
+  shard_5:
+    <<: *shard
+    ports: ["127.0.0.1:5439:5432"]
+    volumes: [postgres_shard_5_data:/var/lib/postgresql]
+
+  shard_6:
+    <<: *shard
+    ports: ["127.0.0.1:5440:5432"]
+    volumes: [postgres_shard_6_data:/var/lib/postgresql]
+
+  shard_7:
+    <<: *shard
+    ports: ["127.0.0.1:5441:5432"]
+    volumes: [postgres_shard_7_data:/var/lib/postgresql]
+
+  shard_8:
+    <<: *shard
+    ports: ["127.0.0.1:5442:5432"]
+    volumes: [postgres_shard_8_data:/var/lib/postgresql]
+
+  shard_9:
+    <<: *shard
+    ports: ["127.0.0.1:5443:5432"]
+    volumes: [postgres_shard_9_data:/var/lib/postgresql]
+
+  shard_10:
+    <<: *shard
+    ports: ["127.0.0.1:5444:5432"]
+    volumes: [postgres_shard_10_data:/var/lib/postgresql]
+
+  shard_11:
+    <<: *shard
+    ports: ["127.0.0.1:5445:5432"]
+    volumes: [postgres_shard_11_data:/var/lib/postgresql]
+
+  shard_12:
+    <<: *shard
+    ports: ["127.0.0.1:5446:5432"]
+    volumes: [postgres_shard_12_data:/var/lib/postgresql]
+
+  shard_13:
+    <<: *shard
+    ports: ["127.0.0.1:5447:5432"]
+    volumes: [postgres_shard_13_data:/var/lib/postgresql]
+
+  shard_14:
+    <<: *shard
+    ports: ["127.0.0.1:5448:5432"]
+    volumes: [postgres_shard_14_data:/var/lib/postgresql]
+
+  shard_15:
+    <<: *shard
+    ports: ["127.0.0.1:5449:5432"]
+    volumes: [postgres_shard_15_data:/var/lib/postgresql]
+
+  shard_16:
+    <<: *shard
+    ports: ["127.0.0.1:5450:5432"]
+    volumes: [postgres_shard_16_data:/var/lib/postgresql]
+
+  shard_17:
+    <<: *shard
+    ports: ["127.0.0.1:5451:5432"]
+    volumes: [postgres_shard_17_data:/var/lib/postgresql]
+
+  shard_18:
+    <<: *shard
+    ports: ["127.0.0.1:5452:5432"]
+    volumes: [postgres_shard_18_data:/var/lib/postgresql]
+
+  shard_19:
+    <<: *shard
+    ports: ["127.0.0.1:5453:5432"]
+    volumes: [postgres_shard_19_data:/var/lib/postgresql]
 
   pgdog:
-    image: pgdog:move-keys
+    image: pgdog:move-keys-broadcast-null-v3
     depends_on:
       shard_0:
         condition: service_healthy
@@ -121,6 +153,36 @@ services:
       shard_3:
         condition: service_healthy
       shard_4:
+        condition: service_healthy
+      shard_5:
+        condition: service_healthy
+      shard_6:
+        condition: service_healthy
+      shard_7:
+        condition: service_healthy
+      shard_8:
+        condition: service_healthy
+      shard_9:
+        condition: service_healthy
+      shard_10:
+        condition: service_healthy
+      shard_11:
+        condition: service_healthy
+      shard_12:
+        condition: service_healthy
+      shard_13:
+        condition: service_healthy
+      shard_14:
+        condition: service_healthy
+      shard_15:
+        condition: service_healthy
+      shard_16:
+        condition: service_healthy
+      shard_17:
+        condition: service_healthy
+      shard_18:
+        condition: service_healthy
+      shard_19:
         condition: service_healthy
     environment:
       RUST_LOG: info
@@ -140,3 +202,18 @@ volumes:
   postgres_shard_2_data:
   postgres_shard_3_data:
   postgres_shard_4_data:
+  postgres_shard_5_data:
+  postgres_shard_6_data:
+  postgres_shard_7_data:
+  postgres_shard_8_data:
+  postgres_shard_9_data:
+  postgres_shard_10_data:
+  postgres_shard_11_data:
+  postgres_shard_12_data:
+  postgres_shard_13_data:
+  postgres_shard_14_data:
+  postgres_shard_15_data:
+  postgres_shard_16_data:
+  postgres_shard_17_data:
+  postgres_shard_18_data:
+  postgres_shard_19_data:

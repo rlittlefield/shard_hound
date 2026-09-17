@@ -1,14 +1,16 @@
 # PgDog lookup-routing demo
 
-This setup uses a PgDog built from the `move-keys` branch of
+This setup uses a PgDog built from the `move-keys-broadcast-null-v3` branch of
 [rlittlefield/pgdog](https://github.com/rlittlefield/pgdog) (the stack of PRs
 [#1](https://github.com/rlittlefield/pgdog/pull/1),
 [#2](https://github.com/rlittlefield/pgdog/pull/2) and
-[#3](https://github.com/rlittlefield/pgdog/pull/3)), which adds the `ADD SHARD`
-and `MOVE KEYS` topology commands on top of
+[#3](https://github.com/rlittlefield/pgdog/pull/3), rebased onto upstream
+v0.1.57), which adds the `ADD SHARD` and `MOVE KEYS` topology commands and
+**hybrid tables** (`kind = "hybrid"`) on top of
 [PR #1279](https://github.com/pgdogdev/pgdog/pull/1279)'s lookup routing.
-Build the image once (clones the branch into a cache directory and runs
-`docker build`; takes several minutes the first time):
+Build the image `pgdog:move-keys-broadcast-null-v3` once (clones the branch
+into a cache directory and runs `docker build`; takes several minutes the
+first time):
 
 ```bash
 scripts/build-pgdog-image.sh
@@ -27,8 +29,10 @@ It starts the database services:
 - `postgres`: an unsharded control database used by Oban, exposed on port `5436`
 - `shard_0`: PostgreSQL 18, exposed directly on port `5433`
 - `shard_1`: PostgreSQL 18, exposed directly on port `5434`
-- `shard_2`–`shard_4`: PostgreSQL 18 on ports `5435`, `5437`, `5438`; empty
-  future shards, activated one at a time by `ADD SHARD`
+- `shard_2`–`shard_19`: PostgreSQL 18 on ports `5435` and `5437`–`5453`
+  (shard `n` maps to port `5433 + n`, shifted up one past `5436`); the
+  non-serving ones idle empty as future shards, activated one at a time by
+  `ADD SHARD`
 - `pgdog`: the application endpoint on port `6433`, with metrics on `9091`
 
 Host ports avoid `5432`, `6432` and `9090` because the local k3s cluster forwards those to its
@@ -64,7 +68,7 @@ DATABASE_PORT=5433 mix shard_hound.sequence_ranges --shard 0
 DATABASE_PORT=5434 mix shard_hound.sequence_ranges --shard 1
 ```
 
-Do not migrate the future shards (2–4): `ADD SHARD` provisions each from
+Do not migrate the future shards: `ADD SHARD` provisions each from
 shard 0, and the UI adopts its migration ledger, sequence range and placement
 row on activation.
 
@@ -92,6 +96,15 @@ The organization row must be committed before inserting tenant rows.
 Organization generation jobs then run `SET LOCAL pgdog.sharding_key = '<organization id>'` at the
 start of their data transaction. PgDog resolves the value with the same lookup query and pins the
 bulk inserts to that shard. This avoids treating a multi-row prepared insert as cross-shard traffic.
+
+`custom_packages` is a **hybrid** (`kind = "hybrid"`) table: rows keyed by an `organization_id`
+route to their tenant's shard like any tenant table, but rows with a NULL `organization_id` are
+shared defaults that PgDog broadcasts to every shard (and `ADD SHARD` copies onto a new shard).
+Like the omnisharded tables, broadcast rows must stay identical everywhere, so the generator gives
+default packages app-supplied `stable_id/1` ids rather than per-shard sequence values. The
+table runs with `REPLICA IDENTITY FULL` because no identity index can include its nullable
+sharding column. The generator UI's **Hybrid table check** panel verifies both halves on every
+shard; see [`docs/resharding.md`](resharding.md#hybrid-tables-kind--hybrid).
 
 ## Exercise fixed placement
 

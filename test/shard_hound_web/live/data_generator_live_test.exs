@@ -25,7 +25,29 @@ defmodule ShardHoundWeb.DataGeneratorLiveTest do
     assert has_element?(view, "#generation_params_organizations[value='2']")
   end
 
+  test "seeds the shared catalog from its own panel", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert has_element?(view, "#catalog-form")
+
+    html =
+      view
+      |> form("#catalog-form", %{
+        "catalog_params" => %{"managed_packages" => "4", "default_packages" => "3"}
+      })
+      |> render_submit()
+
+    assert html =~ "Shared catalog seeded on every shard"
+    assert ShardHound.DemoData.catalog_stats() == %{managed_packages: 4, default_packages: 3}
+  end
+
   test "queues a generation coordinator", %{conn: conn} do
+    {:ok, _params} =
+      ShardHound.DemoData.seed_shared_catalog(%{
+        "managed_packages" => "2",
+        "default_packages" => "0"
+      })
+
     {:ok, view, _html} = live(conn, ~p"/")
 
     view
@@ -36,8 +58,7 @@ defmodule ShardHoundWeb.DataGeneratorLiveTest do
         "software_per_device" => "2",
         "groups_per_organization" => "1",
         "custom_packages_per_organization" => "1",
-        "deployments_per_organization" => "1",
-        "managed_packages" => "2"
+        "deployments_per_organization" => "1"
       }
     })
     |> render_submit()
@@ -61,6 +82,25 @@ defmodule ShardHoundWeb.DataGeneratorLiveTest do
 
     assert html =~ "1 of 1"
     assert html =~ "organizations with no problems detected"
+  end
+
+  test "runs the hybrid table check only on demand", %{conn: conn} do
+    {:ok, _params} =
+      ShardHound.DemoData.seed_shared_catalog(%{
+        "managed_packages" => "1",
+        "default_packages" => "2"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    refute has_element?(view, "#hybrid-check-results")
+
+    html = view |> element("#hybrid-check-button") |> render_click()
+
+    assert html =~ "Hybrid table check passed"
+    assert html =~ "2 default packages expected everywhere"
+    assert html =~ "after manual check"
+    assert has_element?(view, "#hybrid-check-shard-db")
   end
 
   test "hides the move panel when pgdog is disabled", %{conn: conn} do

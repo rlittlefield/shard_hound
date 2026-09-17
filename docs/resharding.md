@@ -33,7 +33,12 @@ and 1 today.
 - **docker/pgdog/pgdog.toml**: a `provisioning = true` entry declares shard 2
   in its final shape without serving it, and the sharded-tables rule gains
   `move_query = "UPDATE organizations SET shard_id = $2 WHERE id = $1"`, the
-  UPDATE `MOVE KEYS` runs on every shard at the cutover.
+  UPDATE `MOVE KEYS` runs on every shard at the cutover. A second, named
+  sharded-tables entry marks `custom_packages` as **hybrid**
+  (`kind = "hybrid"`): its NULL-key rows are shared defaults broadcast to
+  every shard, its keyed rows stay tenant-local. The entry needs a `name`
+  and must follow the column-only rule (the named rule wins the table
+  enumeration that feeds publications and the WAL filter).
 - **docker/pgdog/users.toml**: the app user gets `schema_admin = true`, which
   the schema sync, the instance registry and both topology tasks require.
 - **Migration `20260811220000`**: every tenant table gets a unique
@@ -41,6 +46,11 @@ and 1 today.
   `MOVE KEYS` refuses tables whose replica identity hides the sharding column,
   because DELETEs and identity-only UPDATEs in the WAL stream carry only
   identity columns.
+- **Migration `20260831120000`**: `custom_packages.organization_id` becomes
+  nullable so the table can hold broadcast default rows, and the table
+  switches to **`REPLICA IDENTITY FULL`** — a replica identity index can't
+  include a nullable column, and FULL still shows `MOVE KEYS` the sharding
+  column on every WAL event.
 - **`mix shard_hound.sequence_ranges --shard N`**: moves each shard's tenant id
   sequences into a disjoint range (shard `n` starts at `n × 10¹²`). Moved rows
   keep their ids, so ids must be unique across the fleet. Data generated before
@@ -87,8 +97,10 @@ docker compose exec shard_1 psql -U postgres -d shard_hound_dev -c \
 The generator UI's **Shards** panel does all of this with one button:
 `ADD SHARD <n> AUTO`, then — once the cutover lands — it adopts the migration
 ledger, applies the shard's sequence range, and registers the shard in the
-placement policy table. Shards 2, 3 and 4 are pre-declared in compose and
-pgdog.toml, so the button works three times. The manual equivalent:
+placement policy table. Shards up through 19 are pre-declared in compose and
+pgdog.toml (a compose YAML anchor keeps the service list short), so the
+button keeps working until the fleet reaches 20 shards. The manual
+equivalent:
 
 ```sql
 SHOW INSTANCES;          -- every live pgdog, heartbeating on shard 0
@@ -99,11 +111,12 @@ CUTOVER SHARD shard_hound_dev 2;   -- or ADD SHARD ... AUTO in one step
 ```
 
 The task snapshots the omnisharded tables (`organizations`,
-`shard_hound_packages`) from shard 0, streams WAL until caught up, then the
-cutover pauses only omni writes, drains to zero, activates shard 2 and resumes.
+`shard_hound_packages`) and the hybrid `custom_packages` table's NULL-key
+default rows from shard 0, streams WAL until caught up, then the cutover
+pauses only omni writes, drains to zero, activates shard 2 and resumes.
 Sharded traffic never pauses. `STOP_TASK` aborts cleanly any time before the
-swap. Tenant data never moves here: shard 2 starts empty and fills through
-`MOVE KEYS` (and new organizations placed on it).
+swap. Tenant data never moves here: shard 2 starts with only the broadcast
+rows and fills through `MOVE KEYS` (and new organizations placed on it).
 
 Afterwards, give the new shard its sequence range before assigning tenants:
 
@@ -220,12 +233,89 @@ PK doubles as the replica identity, and `commands.device_id` would become a
 composite foreign key. That is a bigger, Ecto-visible change and is not needed
 for these experiments.
 
+## Hybrid tables (`kind = "hybrid"`)
+
+`custom_packages` demonstrates the third placement class, between sharded and
+omnisharded: rows keyed by `organization_id` are tenant-local and move with
+`MOVE KEYS` like any tenant row, while rows with a NULL key are shared
+defaults that exist on every shard. PgDog broadcasts NULL-key writes like
+omni writes (they pause under the same omni barrier during cutovers), and
+`ADD SHARD` copies exactly the NULL-key rows to the new shard alongside the
+omnisharded snapshot. `MOVE KEYS` on the table copies and later deletes only
+the moving tenant's keyed rows; NULL-key changes in the WAL stream are legal
+non-members of the move and are dropped by the key filter, so a live write
+to a default row during a move can't kill the task.
+
+Why `REPLICA IDENTITY FULL`: `MOVE KEYS` judges every WAL event by its
+sharding column, and DELETE / identity-only UPDATE events carry only the
+replica identity columns. Ordinary tenant tables use a
+`(organization_id, id)` identity index for that, but Postgres refuses a
+nullable column in a replica identity index, so a hybrid table's only
+option is FULL (the whole old row travels with each event). PgDog refuses
+the move otherwise, with a hint naming the fix.
+
+### Verifying it: the Hybrid table check
+
+The generator UI's **Hybrid table check** panel (`DemoData.hybrid_report/0`)
+runs on demand and automatically after every finished `ADD SHARD` or
+`MOVE KEYS` task. Per serving shard it reports:
+
+- **Default rows** and whether they are **identical** to the reference
+  shard (an md5 fingerprint over the ordered ids, slugs and versions). After
+  `ADD SHARD`, the new shard's column proves the NULL-key rows were copied.
+- **Keyed rows**, **strays** (keyed rows whose organization is placed on
+  another shard) and **dangling deployments** (custom-package deployments on
+  the shard whose package, tenant-owned or default, is missing there). After
+  `MOVE KEYS`, zero strays on the source plus zero dangling deployments on the
+  target proves the keyed rows moved and the defaults were left alone.
+- The table's **replica identity**, which must read `full`.
+
+Rows copied by an in-flight `MOVE KEYS` count as strays until its cutover.
+
+Verified on 2026-09-17 against `pgdog:move-keys-broadcast-null-v3` with the
+existing dev data: `ADD SHARD 5 AUTO` landed the 25 default rows on shard 5
+with the same fingerprint as shards 0–4 and no keyed rows; a `MOVE KEYS` of
+one organization from shard 0 to shard 5 moved its 40 keyed
+`custom_packages` rows (0 left on the source), left the defaults at 25 on
+both shards, and every one of its 50 custom-package deployments resolves on
+the target.
+
+### v3 behaviors the UI depends on
+
+- **`SHOW TASKS` shape**: root tasks have an empty `parent_id` and subtasks
+  point at theirs; there is no `scope` column any more. The task poller
+  matches on `id` plus an empty `parent_id`. Statuses are `running`,
+  `finished`, or `failed: <reason>`; finished tasks stay listed for a
+  retention window, so a task that disappears is treated as finished.
+- **DDL through PgDog reloads its config**: every `ALTER TABLE` that reaches
+  a shard (`PGDOG_SCHEMA_RELOAD_ON_DDL`, on by default) makes PgDog rebuild
+  its pools, and a task holding a pool at that moment dies with
+  `failed: pool: pool is shut down`. Don't run migrations or
+  `ensure_replica_identities/0` while an `ADD SHARD` or `MOVE KEYS` task is
+  running; the UI only runs them once the task has finished.
+
+What that demands of the app:
+
+- **App-supplied ids for broadcast rows**: a broadcast insert runs on every
+  shard, and per-shard sequences would mint different ids. The generator uses
+  `stable_id/1` for default packages, same as the omnisharded tables.
+- **No sharding-key pin around default writes**: an insert inside a
+  `SET LOCAL pgdog.sharding_key` transaction lands on one shard only. The
+  coordinator job seeds defaults outside any keyed transaction.
+- **`REPLICA IDENTITY FULL`** instead of the `(organization_id, id)` identity
+  index (see migration `20260831120000`); `ensure_replica_identities/0`
+  re-asserts it after `ADD SHARD`.
+- **Reads of the defaults** happen inside keyed transactions (each generator
+  job reads them on its own shard). An unkeyed cross-shard read would gather
+  one copy per shard.
+
 ## Caveats
 
 - **Omnisharded sequences**: `shard_hound_packages` and `organizations` are
   broadcast, and their rows must stay identical on every shard, so their ids
   must come from the application (the generator's `stable_id/1` hash does
-  this), never from per-shard sequences.
+  this), never from per-shard sequences. The same holds for the hybrid
+  `custom_packages` table's NULL-key default rows.
 - **Migrations vs. ADD SHARD**: a shard added by `ADD SHARD` gets its schema
   from shard 0 via pg_dump, including the `schema_migrations` rows — after
   activation it takes future `mix ecto.migrate` runs like any other shard

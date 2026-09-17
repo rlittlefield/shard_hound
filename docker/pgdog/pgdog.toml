@@ -36,7 +36,7 @@ database_name = "shard_hound_dev"
 shard = 1
 role = "primary"
 
-# Shards 2 and 3 started as `provisioning = true` entries and were
+# Shards 2 through 5 started as `provisioning = true` entries and were
 # activated by ADD SHARD; per the workflow, the flag comes off the
 # manifest after activation. Startup convergence can also re-activate
 # a flagged-but-activated shard from its `pgdog.config` marker, but
@@ -57,16 +57,151 @@ database_name = "shard_hound_dev"
 shard = 3
 role = "primary"
 
-# The next future shard, declared in its final shape and kept out of
-# the serving topology until `ADD SHARD shard_hound_dev 4` activates
-# it.
-
 [[databases]]
 name = "shard_hound_dev"
 host = "shard_4"
 port = 5432
 database_name = "shard_hound_dev"
 shard = 4
+role = "primary"
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_5"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 5
+role = "primary"
+
+# Future shards, declared in their final shape and kept out of the
+# serving topology until `ADD SHARD shard_hound_dev <n>` activates
+# them, one at a time and in order. After each activation, drop the
+# shard's `provisioning` flag from this manifest (the durable record;
+# startup convergence from the `pgdog.config` marker is the fallback).
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_6"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 6
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_7"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 7
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_8"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 8
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_9"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 9
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_10"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 10
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_11"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 11
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_12"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 12
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_13"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 13
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_14"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 14
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_15"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 15
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_16"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 16
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_17"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 17
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_18"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 18
+role = "primary"
+provisioning = true
+
+[[databases]]
+name = "shard_hound_dev"
+host = "shard_19"
+port = 5432
+database_name = "shard_hound_dev"
+shard = 19
 role = "primary"
 provisioning = true
 
@@ -84,3 +219,24 @@ lookup_result = "shard"
 # MOVE KEYS flips a tenant's placement by running this on every shard
 # at the cutover: $1 is the organization id, $2 the new shard number.
 move_query = "UPDATE organizations SET shard_id = $2 WHERE id = $1"
+
+# Hybrid table: keyed rows live on their tenant's shard like any
+# sharded table, but rows with a NULL organization_id are shared
+# defaults that broadcast to every shard — and ADD SHARD copies
+# exactly those rows to the new shard, while MOVE KEYS moves only the
+# tenant's keyed rows and leaves the defaults in place. The kind needs
+# a table name (pgdog enumerates the table into its publications), and
+# the named rule must come after the column-only rule so it wins the
+# enumeration. MOVE KEYS requires every rule to place by lookup and
+# carry the move_query, so both repeat here (the cutover deduplicates
+# identical move queries). The table itself must use REPLICA IDENTITY
+# FULL: no identity index can include its nullable sharding column.
+[[sharded_tables]]
+database = "shard_hound_dev"
+name = "custom_packages"
+column = "organization_id"
+data_type = "bigint"
+lookup_query = "SELECT shard_id FROM organizations WHERE id = $1"
+lookup_result = "shard"
+move_query = "UPDATE organizations SET shard_id = $2 WHERE id = $1"
+kind = "hybrid"

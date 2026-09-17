@@ -21,6 +21,10 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
   alias ShardHound.DeviceManagement.ShardHoundPackage
   alias ShardHound.Repo
 
+  # insert_all binds one parameter per value and Postgres caps a
+  # statement at 65_535 binds; 4_000 rows of ~13 columns stays under.
+  @insert_chunk 4_000
+
   @impl Oban.Worker
   def perform(%Oban.Job{args: args}) do
     organization = insert_organization(args)
@@ -28,16 +32,21 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
     if organization_data_exists?(organization.id) do
       :ok
     else
-      managed_packages = list_managed_packages(args)
+      managed_packages = list_managed_packages()
+      definitions = Enum.map(managed_packages, &definition/1)
 
-      case Repo.transaction(
-             fn ->
-               generate_organization_data(organization, managed_packages, args)
-             end,
-             timeout: :infinity
-           ) do
-        {:ok, _organization} -> :ok
-        {:error, reason} -> {:error, reason}
+      if length(definitions) < args["software_per_device"] do
+        {:error, :managed_catalog_smaller_than_software_per_device}
+      else
+        case Repo.transaction(
+               fn ->
+                 generate_organization_data(organization, managed_packages, definitions, args)
+               end,
+               timeout: :infinity
+             ) do
+          {:ok, _organization} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
       end
     end
   end
@@ -69,16 +78,28 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
     Repo.exists?(from device in Device, where: device.organization_id == ^organization_id)
   end
 
-  defp generate_organization_data(organization, managed_packages, args) do
+  defp generate_organization_data(organization, managed_packages, definitions, args) do
     now = DateTime.utc_now(:second)
 
     Repo.query!("SET LOCAL pgdog.sharding_key = '#{organization.id}'")
 
+    # Group membership is only tracked for the slugs groups filter on;
+    # tracking every slug at 20k devices x 2k apps would hold tens of
+    # millions of device ids in memory for nothing.
+    group_slugs = group_slugs(definitions, args)
+
     devices = insert_devices(organization.id, args, now)
-    memberships = insert_software(organization.id, devices, args, now)
-    groups = insert_groups(organization.id, memberships, args, now)
+    memberships = insert_software(organization.id, devices, definitions, group_slugs, args, now)
+    groups = insert_groups(organization.id, definitions, memberships, args, now)
     custom_packages = insert_custom_packages(organization.id, args, now)
-    insert_deployments(organization.id, groups, managed_packages, custom_packages, args, now)
+
+    # Default packages (NULL organization_id) are broadcast to every
+    # shard, so this keyed transaction finds them locally. Deployments
+    # then reference a mix of the org's own packages and the shared
+    # defaults.
+    deployable_packages = custom_packages ++ list_default_packages()
+
+    insert_deployments(organization.id, groups, managed_packages, deployable_packages, args, now)
 
     organization
   end
@@ -87,34 +108,37 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
     generation_key = String.slice(args["generation_id"], 0, 8)
     organization_index = args["organization_index"]
 
-    rows =
-      Enum.map(1..args["devices_per_organization"], fn device_index ->
-        platform = if rem(device_index, 3) == 0, do: "windows", else: "macos"
+    Enum.map(1..args["devices_per_organization"], fn device_index ->
+      platform = if rem(device_index, 3) == 0, do: "windows", else: "macos"
 
-        %{
-          organization_id: organization_id,
-          serial_number: "#{generation_key}-#{organization_index}-#{device_index}",
-          hostname: "device-#{organization_index}-#{device_index}",
-          platform: platform,
-          architecture: if(platform == "macos", do: "arm64", else: "x86_64"),
-          os_version: if(platform == "macos", do: "15.6", else: "11-24H2"),
-          last_seen_at: DateTime.add(now, -rem(device_index, 168), :hour),
-          metadata: %{office: "site-#{rem(device_index, 12) + 1}"},
-          inserted_at: now,
-          updated_at: now
-        }
-      end)
-
-    {_count, devices} = Repo.insert_all(Device, rows, returning: [:id, :serial_number])
-    devices
+      %{
+        organization_id: organization_id,
+        serial_number: "#{generation_key}-#{organization_index}-#{device_index}",
+        hostname: "device-#{organization_index}-#{device_index}",
+        platform: platform,
+        architecture: if(platform == "macos", do: "arm64", else: "x86_64"),
+        os_version: if(platform == "macos", do: "15.6", else: "11-24H2"),
+        last_seen_at: DateTime.add(now, -rem(device_index, 168), :hour),
+        metadata: %{office: "site-#{rem(device_index, 12) + 1}"},
+        inserted_at: now,
+        updated_at: now
+      }
+    end)
+    |> Enum.chunk_every(@insert_chunk)
+    |> Enum.flat_map(fn chunk ->
+      {_count, devices} = Repo.insert_all(Device, chunk, returning: [:id, :serial_number])
+      devices
+    end)
   end
 
-  defp insert_software(organization_id, devices, args, now) do
-    definitions = args["package_definitions"]
+  defp insert_software(organization_id, devices, definitions, group_slugs, args, now) do
+    # Batch size adapts so each pass builds ~@insert_chunk rows even
+    # when every device reports thousands of apps.
+    device_batch_size = max(1, div(@insert_chunk, args["software_per_device"]))
 
     devices
     |> Enum.with_index(1)
-    |> Enum.chunk_every(100)
+    |> Enum.chunk_every(device_batch_size)
     |> Enum.reduce(%{}, fn device_batch, memberships ->
       {software_rows, memberships} =
         Enum.reduce(device_batch, {[], memberships}, fn {device, device_index},
@@ -145,7 +169,7 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
             }
 
             memberships =
-              if latest? do
+              if latest? and MapSet.member?(group_slugs, software["slug"]) do
                 Map.update(memberships, software["slug"], [device.id], &[device.id | &1])
               else
                 memberships
@@ -155,14 +179,21 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
           end)
         end)
 
-      Repo.insert_all(DeviceSoftware, software_rows)
+      software_rows
+      |> Enum.chunk_every(@insert_chunk)
+      |> Enum.each(&Repo.insert_all(DeviceSoftware, &1))
+
       memberships
     end)
   end
 
-  defp insert_groups(organization_id, memberships, args, now) do
-    definitions = args["package_definitions"]
+  defp group_slugs(definitions, args) do
+    Range.new(1, args["groups_per_organization"], 1)
+    |> Enum.map(&cycle_at(definitions, &1)["slug"])
+    |> MapSet.new()
+  end
 
+  defp insert_groups(organization_id, definitions, memberships, args, now) do
     group_specs =
       Range.new(1, args["groups_per_organization"], 1)
       |> Enum.map(fn group_index ->
@@ -186,8 +217,14 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
         %{name: name, software_slug: software["slug"], row: row}
       end)
 
-    {_count, groups} =
-      Repo.insert_all(Group, Enum.map(group_specs, & &1.row), returning: [:id, :name])
+    groups =
+      group_specs
+      |> Enum.map(& &1.row)
+      |> Enum.chunk_every(@insert_chunk)
+      |> Enum.flat_map(fn chunk ->
+        {_count, groups} = Repo.insert_all(Group, chunk, returning: [:id, :name])
+        groups
+      end)
 
     groups_by_name = Map.new(groups, &{&1.name, &1})
 
@@ -205,7 +242,7 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
         }
       end)
     end)
-    |> Enum.chunk_every(1_000)
+    |> Enum.chunk_every(@insert_chunk)
     |> Enum.each(&Repo.insert_all(GroupDevice, &1))
 
     groups
@@ -243,35 +280,53 @@ defmodule ShardHound.DemoData.GenerateOrganizationWorker do
          args,
          now
        ) do
-    rows =
-      Range.new(1, args["deployments_per_organization"], 1)
-      |> Enum.map(fn deployment_index ->
-        {package_type, package} =
-          deployment_package(deployment_index, managed_packages, custom_packages)
+    Range.new(1, args["deployments_per_organization"], 1)
+    |> Enum.map(fn deployment_index ->
+      {package_type, package} =
+        deployment_package(deployment_index, managed_packages, custom_packages)
 
-        group = cycle_at(groups, deployment_index)
+      group = cycle_at(groups, deployment_index)
 
-        %{
-          organization_id: organization_id,
-          group_id: group.id,
-          package_id: package.id,
-          package_type: package_type,
-          name: "Deploy #{package.name} to #{group.name}",
-          target_version: package.latest_version,
-          status: Enum.at(~w(pending scheduled running completed), rem(deployment_index, 4)),
-          scheduled_at: DateTime.add(now, deployment_index, :hour),
-          metadata: %{created_by: "demo generator"},
-          inserted_at: now,
-          updated_at: now
-        }
-      end)
-
-    Repo.insert_all(Deployment, rows)
+      %{
+        organization_id: organization_id,
+        group_id: group.id,
+        package_id: package.id,
+        package_type: package_type,
+        name: "Deploy #{package.name} to #{group.name}",
+        target_version: package.latest_version,
+        status: Enum.at(~w(pending scheduled running completed), rem(deployment_index, 4)),
+        scheduled_at: DateTime.add(now, deployment_index, :hour),
+        metadata: %{created_by: "demo generator"},
+        inserted_at: now,
+        updated_at: now
+      }
+    end)
+    |> Enum.chunk_every(@insert_chunk)
+    |> Enum.each(&Repo.insert_all(Deployment, &1))
   end
 
-  defp list_managed_packages(args) do
-    slugs = args["package_definitions"] |> Enum.map(& &1["slug"]) |> MapSet.new()
-    Enum.filter(Repo.all(ShardHoundPackage), &MapSet.member?(slugs, &1.slug))
+  # The shared managed catalog is omnisharded, so any shard answers
+  # with the full set. Ordered so every organization sees the same
+  # rotation.
+  defp list_managed_packages do
+    Repo.all(from package in ShardHoundPackage, order_by: package.slug)
+  end
+
+  defp definition(%ShardHoundPackage{} = package) do
+    %{
+      "name" => package.name,
+      "slug" => package.slug,
+      "publisher" => package.metadata["publisher"],
+      "version" => package.latest_version
+    }
+  end
+
+  defp list_default_packages do
+    Repo.all(
+      from package in CustomPackage,
+        where: is_nil(package.organization_id),
+        order_by: package.slug
+    )
   end
 
   defp deployment_package(index, managed_packages, custom_packages)

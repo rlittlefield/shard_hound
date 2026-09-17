@@ -16,19 +16,44 @@ defmodule ShardHound.DemoDataTest do
   alias ShardHound.DeviceManagement.Organization
   alias ShardHound.DeviceManagement.ShardHoundPackage
 
-  test "validates connected generation counts" do
-    changeset =
-      DemoData.change_generation(%ShardHound.DemoData.GenerationParams{}, %{
-        "managed_packages" => "2",
-        "software_per_device" => "3"
-      })
+  test "enqueue refuses more software per device than the seeded catalog" do
+    {:ok, _params} =
+      DemoData.seed_shared_catalog(%{"managed_packages" => "2", "default_packages" => "0"})
 
-    refute changeset.valid?
-    assert "cannot exceed managed packages" in errors_on(changeset).software_per_device
+    assert {:error, changeset} =
+             DemoData.enqueue_generation(%{
+               "organizations" => "1",
+               "devices_per_organization" => "1",
+               "software_per_device" => "3",
+               "groups_per_organization" => "1",
+               "custom_packages_per_organization" => "0",
+               "deployments_per_organization" => "0"
+             })
+
+    assert [message] = errors_on(changeset).software_per_device
+    assert message =~ "exceeds the shared catalog"
+  end
+
+  test "seeding the shared catalog is an idempotent upsert" do
+    {:ok, _params} =
+      DemoData.seed_shared_catalog(%{"managed_packages" => "12", "default_packages" => "5"})
+
+    {:ok, _params} =
+      DemoData.seed_shared_catalog(%{"managed_packages" => "12", "default_packages" => "5"})
+
+    assert DemoData.catalog_stats() == %{managed_packages: 12, default_packages: 5}
+
+    assert ShardHound.Repo.aggregate(
+             from(package in CustomPackage, where: is_nil(package.organization_id)),
+             :count
+           ) == 5
   end
 
   test "workers create a connected organization dataset" do
     generation_id = Ecto.UUID.generate()
+
+    {:ok, _params} =
+      DemoData.seed_shared_catalog(%{"managed_packages" => "3", "default_packages" => "2"})
 
     args = %{
       generation_id: generation_id,
@@ -37,8 +62,7 @@ defmodule ShardHound.DemoDataTest do
       software_per_device: 2,
       groups_per_organization: 2,
       custom_packages_per_organization: 2,
-      deployments_per_organization: 3,
-      managed_packages: 3
+      deployments_per_organization: 3
     }
 
     assert :ok = perform_job(GenerateDatasetWorker, args)
@@ -59,7 +83,15 @@ defmodule ShardHound.DemoDataTest do
     assert ShardHound.Repo.aggregate(DeviceSoftware, :count) == 8
     assert ShardHound.Repo.aggregate(Group, :count) == 2
     assert ShardHound.Repo.aggregate(GroupDevice, :count) > 0
-    assert ShardHound.Repo.aggregate(CustomPackage, :count) == 2
+
+    # 2 tenant-local custom packages, plus the 2 shared defaults with a
+    # NULL organization_id seeded into the hybrid table.
+    assert ShardHound.Repo.aggregate(
+             from(package in CustomPackage, where: not is_nil(package.organization_id)),
+             :count
+           ) == 2
+
+    assert ShardHound.Repo.aggregate(CustomPackage, :count) == 4
     assert ShardHound.Repo.aggregate(ShardHoundPackage, :count) == 3
     assert ShardHound.Repo.aggregate(Deployment, :count) == 3
 
@@ -67,6 +99,79 @@ defmodule ShardHound.DemoDataTest do
              from software in DeviceSoftware,
                where: software.organization_id == ^organization.id and software.version != ""
            )
+  end
+
+  test "hybrid report verifies default rows, keyed placement and replica identity" do
+    {:ok, _params} =
+      DemoData.seed_shared_catalog(%{"managed_packages" => "1", "default_packages" => "3"})
+
+    organization =
+      ShardHound.Repo.insert!(%Organization{name: "Hybrid Org", slug: "hybrid-org", shard_id: 0})
+
+    package =
+      ShardHound.Repo.insert!(%CustomPackage{
+        organization_id: organization.id,
+        name: "Internal Tool",
+        slug: "internal-tool",
+        platform: "macos",
+        architecture: "universal",
+        installer_type: "custom",
+        latest_version: "1.0.0"
+      })
+
+    group =
+      ShardHound.Repo.insert!(%Group{
+        organization_id: organization.id,
+        name: "All devices",
+        description: "everything",
+        filter: %{}
+      })
+
+    deployment = fn package_id ->
+      ShardHound.Repo.insert!(%Deployment{
+        organization_id: organization.id,
+        group_id: group.id,
+        package_id: package_id,
+        package_type: "custom",
+        name: "Deploy",
+        target_version: "1.0.0",
+        status: "pending"
+      })
+    end
+
+    # One deployment on the tenant's own package, one on a shared
+    # default: both resolve on this database.
+    deployment.(package.id)
+    deployment.(DemoData.stable_id("default-package:1"))
+
+    report = DemoData.hybrid_report()
+
+    assert report.table == "custom_packages"
+    assert report.ok
+    assert report.expected_defaults == 3
+
+    assert [
+             %{
+               shard: nil,
+               default_rows: 3,
+               defaults_match: true,
+               keyed_rows: 1,
+               stray_rows: 0,
+               dangling_deployments: 0,
+               replica_identity: "full",
+               nullable_key: true,
+               ok: true
+             }
+           ] = report.shards
+
+    # A deployment whose package never arrived (what a MOVE KEYS that
+    # dropped keyed rows, or an ADD SHARD that skipped the defaults,
+    # would leave behind) fails the check.
+    deployment.(DemoData.stable_id("default-package:missing"))
+
+    report = DemoData.hybrid_report()
+    refute report.ok
+    assert [%{dangling_deployments: 1, ok: false}] = report.shards
   end
 
   test "tenant foreign keys reject cross-organization device data" do
