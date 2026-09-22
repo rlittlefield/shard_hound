@@ -35,12 +35,11 @@ services:
       - postgres_data:/var/lib/postgresql
 
   # Host ports: 5432 belongs to k3s, 5436 to the control database, so
-  # the shards take 5433-5435 and 5437 onward. Shards 0-5 are serving;
-  # everything after them is a pre-declared future shard, kept out of
-  # the serving topology by `provisioning = true` entries in
-  # pgdog.toml. Each `ADD SHARD shard_hound_dev <n>` (or the UI's Add
-  # shard button) activates the next one, in order. They idle empty
-  # until then.
+  # the shards take 5433-5435 and 5437 onward. Every shard is declared
+  # in pgdog.toml; which ones serve is decided by the `pgdog.config`
+  # marker pgdog stamps on each shard at every cutover. Each `ADD SHARD
+  # shard_hound_dev <n>` (or the UI's Add shard button) activates the
+  # next one, in order. Until then they idle empty.
   shard_0:
     <<: *shard
     ports: ["127.0.0.1:5433:5432"]
@@ -142,7 +141,7 @@ services:
     volumes: [postgres_shard_19_data:/var/lib/postgresql]
 
   pgdog:
-    image: pgdog:move-keys-broadcast-null-v3
+    image: pgdog:34c6c7a7
     depends_on:
       shard_0:
         condition: service_healthy

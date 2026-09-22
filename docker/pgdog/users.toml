@@ -3,6 +3,6 @@ name = "postgres"
 database = "shard_hound_dev"
 password = "postgres"
 # Lets pgdog manage schema-level state on the shards: the pg_dump
-# schema sync, the pgdog.instances registry, and the topology tasks
+# schema sync, the pgdog.config markers, and the topology tasks
 # (ADD SHARD, MOVE KEYS) all run as this user.
 schema_admin = true

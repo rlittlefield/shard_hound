@@ -36,11 +36,9 @@ database_name = "shard_hound_dev"
 shard = 1
 role = "primary"
 
-# Shards 2 through 5 started as `provisioning = true` entries and were
-# activated by ADD SHARD; per the workflow, the flag comes off the
-# manifest after activation. Startup convergence can also re-activate
-# a flagged-but-activated shard from its `pgdog.config` marker, but
-# don't lean on it: removing the flag is the durable record.
+# Shards 2 through 5 were activated by ADD SHARD. The manifest needs
+# no edits per activation: which declared shards serve is decided by
+# shard 0's `pgdog.config` marker, stamped by every cutover.
 [[databases]]
 name = "shard_hound_dev"
 host = "shard_2"
@@ -74,10 +72,10 @@ shard = 5
 role = "primary"
 
 # Future shards, declared in their final shape and kept out of the
-# serving topology until `ADD SHARD shard_hound_dev <n>` activates
-# them, one at a time and in order. After each activation, drop the
-# shard's `provisioning` flag from this manifest (the durable record;
-# startup convergence from the `pgdog.config` marker is the fallback).
+# serving topology by shard 0's `pgdog.config` marker until
+# `ADD SHARD shard_hound_dev <n>` activates them, one at a time and in
+# order. Nothing to edit here per activation: the cutover stamps the
+# new count on every shard, which restarts and RELOADs trust.
 
 [[databases]]
 name = "shard_hound_dev"
@@ -86,7 +84,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 6
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -95,7 +92,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 7
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -104,7 +100,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 8
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -113,7 +108,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 9
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -122,7 +116,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 10
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -131,7 +124,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 11
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -140,7 +132,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 12
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -149,7 +140,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 13
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -158,7 +148,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 14
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -167,7 +156,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 15
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -176,7 +164,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 16
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -185,7 +172,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 17
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -194,7 +180,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 18
 role = "primary"
-provisioning = true
 
 [[databases]]
 name = "shard_hound_dev"
@@ -203,7 +188,6 @@ port = 5432
 database_name = "shard_hound_dev"
 shard = 19
 role = "primary"
-provisioning = true
 
 [[omnisharded_tables]]
 database = "shard_hound_dev"

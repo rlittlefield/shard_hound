@@ -124,10 +124,10 @@ Afterwards, give the new shard its sequence range before assigning tenants:
 DATABASE_PORT=5435 mix shard_hound.sequence_ranges --shard 2
 ```
 
-The config file is mounted read-only, so the `provisioning` flag stays in
-`pgdog.toml` after activation; PgDog reconciles against the `pgdog.config`
-marker it wrote on shard 2 at startup and after every `RELOAD`, so restarts
-converge on three shards on their own.
+On the pgdog-enterprise build, `pgdog.toml` carries no `provisioning`
+flags at all: every shard is declared, and the `pgdog.config` marker the
+cutover stamps on each shard decides how many serve. Restarts and `RELOAD`
+trust the marker, so the manifest needs no edit per activation.
 
 ## Proposed application integration
 

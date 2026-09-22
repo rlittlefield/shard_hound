@@ -1,26 +1,25 @@
 # PgDog lookup-routing demo
 
-This setup uses a PgDog built from the `move-keys-broadcast-null-v3` branch of
-[rlittlefield/pgdog](https://github.com/rlittlefield/pgdog) (the stack of PRs
-[#1](https://github.com/rlittlefield/pgdog/pull/1),
-[#2](https://github.com/rlittlefield/pgdog/pull/2) and
-[#3](https://github.com/rlittlefield/pgdog/pull/3), rebased onto upstream
-v0.1.57), which adds the `ADD SHARD` and `MOVE KEYS` topology commands and
-**hybrid tables** (`kind = "hybrid"`) on top of
-[PR #1279](https://github.com/pgdogdev/pgdog/pull/1279)'s lookup routing.
-Build the image `pgdog:move-keys-broadcast-null-v3` once (clones the branch
-into a cache directory and runs `docker build`; takes several minutes the
-first time):
+This setup uses a **local build of pgdog-enterprise**: `compose.yaml` pins
+`pgdog:34c6c7a7`, built from
+[pgdogdev/pgdog-enterprise](https://github.com/pgdogdev/pgdog-enterprise) at
+commit `34c6c7a7` (PgDog Enterprise v0.1.59). It carries the `ADD SHARD` and
+`MOVE KEYS` topology commands, **hybrid tables** (`kind = "hybrid"`) and a
+marker-driven topology: which declared shards serve is decided by the
+`pgdog.config` marker on every shard, stamped by each cutover, so
+`pgdog.toml` needs no `provisioning` flags and no edits per activation.
 
-```bash
-scripts/build-pgdog-image.sh
-```
+There is no build script for it yet: check out the repository at that
+commit and `docker build` it as `pgdog:34c6c7a7` (or build another commit
+and change the `image:` tag in `compose.yaml` to match).
 
-To build local, unpushed pgdog work instead, point it at your checkout:
-
-```bash
-PGDOG_DIR=~/dev/pgdog-fork scripts/build-pgdog-image.sh
-```
+`scripts/build-pgdog-image.sh` still builds the previous image,
+`pgdog:move-keys-broadcast-null-v3`, from the `move-keys-broadcast-null-v3`
+branch of [rlittlefield/pgdog](https://github.com/rlittlefield/pgdog) (the
+PR stack [#1](https://github.com/rlittlefield/pgdog/pull/1),
+[#2](https://github.com/rlittlefield/pgdog/pull/2),
+[#3](https://github.com/rlittlefield/pgdog/pull/3) rebased onto upstream
+v0.1.57). To run that build instead, point `compose.yaml` back at its tag.
 
 See [`docs/resharding.md`](resharding.md) for the resharding experiments.
 
